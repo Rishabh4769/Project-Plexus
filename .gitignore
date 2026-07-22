@@ -1,0 +1,22 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Node / frontend
+frontend/node_modules/
+frontend/dist/
+
+# Runtime data — regenerated on each run, never commit real capture data
+network_traffic.db
+*.db
+
+# OS / editor
+.DS_Store
+.vscode/
+
+# ML artifacts (added once ml/ exists)
+ml/artifacts/
+data/captured/
+data/*.csv
+data_cleaning/datasets/*.csv
