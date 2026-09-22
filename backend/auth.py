@@ -22,18 +22,27 @@ from typing import Optional
 import bcrypt  # type: ignore
 
 from backend.database import (
-    create_user,
+    create_first_user,
+    create_session_row,
+    delete_session_row,
+    get_session_row,
     get_user,
+    purge_expired_sessions,
+    touch_session,
     update_last_login,
-    user_count,
 )
 
-# ── Token store (in-memory) ──────────────────────────────────────────── #
-# { token: {"username": str, "expires_at": float} }
-_sessions: dict[str, dict] = {}
+# ── Token store (SQLite-backed) ──────────────────────────────────────── #
+# Sessions persist in the `sessions` table so they survive restarts and
+# work across multiple uvicorn workers. Only SHA-256 hashes of tokens are
+# stored — a stolen database must not yield live session tokens.
 
 TOKEN_TTL_SECONDS = 8 * 60 * 60   # 8 hours
 TOKEN_BYTES       = 32             # 256-bit token
+
+
+def _hash_token(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()
 
 
 # ── Password helpers ─────────────────────────────────────────────────── #
@@ -51,37 +60,31 @@ def verify_password(plaintext: str, stored_hash: str) -> bool:
 
 # ── Session helpers ──────────────────────────────────────────────────── #
 
-def _purge_expired() -> None:
-    now = time.time()
-    expired = [t for t, v in _sessions.items() if v["expires_at"] < now]
-    for t in expired:
-        del _sessions[t]
-
-
 def create_session(username: str) -> str:
-    _purge_expired()
+    purge_expired_sessions(time.time())
     token = secrets.token_hex(TOKEN_BYTES)
-    _sessions[token] = {
-        "username":   username,
-        "expires_at": time.time() + TOKEN_TTL_SECONDS,
-    }
+    create_session_row(_hash_token(token), username, time.time() + TOKEN_TTL_SECONDS)
     return token
 
 
 def validate_token(token: str) -> Optional[str]:
     """Return the username if the token is valid, else None."""
-    _purge_expired()
-    # Use compare_digest to prevent timing attacks
-    for stored_token, data in _sessions.items():
-        if secrets.compare_digest(stored_token, token):
-            # Slide expiry on activity
-            data["expires_at"] = time.time() + TOKEN_TTL_SECONDS
-            return data["username"]
-    return None
+    if not token or len(token) != TOKEN_BYTES * 2 or not all(
+        c in "0123456789abcdef" for c in token
+    ):
+        return None
+    purge_expired_sessions(time.time())
+    # Exact lookup on the SHA-256 hash — no timing-sensitive comparison needed.
+    row = get_session_row(_hash_token(token))
+    if row is None or row["expires_at"] < time.time():
+        return None
+    # Slide expiry on activity
+    touch_session(_hash_token(token), time.time() + TOKEN_TTL_SECONDS)
+    return row["username"]
 
 
 def revoke_token(token: str) -> None:
-    _sessions.pop(token, None)
+    delete_session_row(_hash_token(token))
 
 
 # ── Public auth actions ───────────────────────────────────────────────── #
@@ -107,15 +110,14 @@ def login(username: str, password: str) -> tuple[bool, str]:
 
 
 def register_first_user(username: str, password: str) -> tuple[bool, str]:
-    """Only allowed when no users exist yet (initial setup)."""
-    if user_count() > 0:
-        return False, "Setup already complete"
+    """
+    Only allowed when no users exist yet (initial setup). The existence
+    check and the INSERT run inside one IMMEDIATE transaction in
+    create_first_user(), so two concurrent setup requests cannot both win.
+    """
     if len(username) < 3 or len(username) > 32:
         return False, "Username must be 3–32 characters"
     if len(password) < 8:
         return False, "Password must be at least 8 characters"
     hashed = hash_password(password)
-    ok = create_user(username, hashed)
-    if not ok:
-        return False, "Username already taken"
-    return True, "Account created"
+    return create_first_user(username, hashed)

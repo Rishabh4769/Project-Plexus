@@ -69,6 +69,13 @@ def init_db() -> None:
                 username   TEXT    NOT NULL DEFAULT ''
             )
         """)
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS sessions (
+                token_hash TEXT PRIMARY KEY,
+                username   TEXT NOT NULL,
+                expires_at REAL NOT NULL
+            )
+        """)
         # Indexes for common query patterns
         c.execute("CREATE INDEX IF NOT EXISTS idx_packets_session ON packets(session_id)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_logs_source    ON app_logs(source)")
@@ -268,6 +275,47 @@ def get_session_summary(session_id: str) -> dict:
     }
 
 
+# ── Session management (persistent, multi-worker safe) ────────────────── #
+
+def create_session_row(token_hash: str, username: str, expires_at: float) -> None:
+    with get_connection() as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO sessions (token_hash, username, expires_at) VALUES (?, ?, ?)",
+            (token_hash, username, expires_at),
+        )
+        conn.commit()
+
+
+def get_session_row(token_hash: str) -> dict | None:
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT username, expires_at FROM sessions WHERE token_hash = ?",
+            (token_hash,),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def touch_session(token_hash: str, expires_at: float) -> None:
+    with get_connection() as conn:
+        conn.execute(
+            "UPDATE sessions SET expires_at = ? WHERE token_hash = ?",
+            (expires_at, token_hash),
+        )
+        conn.commit()
+
+
+def delete_session_row(token_hash: str) -> None:
+    with get_connection() as conn:
+        conn.execute("DELETE FROM sessions WHERE token_hash = ?", (token_hash,))
+        conn.commit()
+
+
+def purge_expired_sessions(now: float) -> None:
+    with get_connection() as conn:
+        conn.execute("DELETE FROM sessions WHERE expires_at < ?", (now,))
+        conn.commit()
+
+
 # ── User management ───────────────────────────────────────────────────── #
 
 def create_user(username: str, password_hash: str) -> bool:
@@ -285,6 +333,35 @@ def create_user(username: str, password_hash: str) -> bool:
         return True
     except sqlite3.IntegrityError:
         return False
+
+
+def create_first_user(username: str, password_hash: str) -> tuple[bool, str]:
+    """
+    Atomically create the very first user. The user_count check and the
+    INSERT run inside one IMMEDIATE transaction, so two concurrent
+    /api/auth/setup requests cannot both succeed.
+    Returns (ok, message).
+    """
+    conn = get_connection()
+    try:
+        conn.isolation_level = None  # autocommit; we manage BEGIN/COMMIT ourselves
+        conn.execute("BEGIN IMMEDIATE")
+        count = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+        if count > 0:
+            conn.execute("ROLLBACK")
+            return False, "Setup already complete"
+        try:
+            conn.execute(
+                "INSERT INTO users (username, password_hash) VALUES (?, ?)",
+                (username, password_hash),
+            )
+        except sqlite3.IntegrityError:
+            conn.execute("ROLLBACK")
+            return False, "Username already taken"
+        conn.execute("COMMIT")
+        return True, "Account created"
+    finally:
+        conn.close()
 
 
 def get_user(username: str) -> dict | None:

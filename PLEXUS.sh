@@ -54,16 +54,17 @@ trap cleanup INT TERM
 # ── Start backend ──────────────────────────────────────────────────────
 echo -e "${GREEN}[backend]${RESET} Starting API server on ${BOLD}http://127.0.0.1:8000${RESET}…"
 
-if [ "$(id -u)" -ne 0 ]; then
-  # Raw packet capture requires root on macOS/Linux
-  sudo "$ROOT/.venv/bin/uvicorn" backend.main:app \
-    --host 127.0.0.1 --port 8000 \
-    --log-level warning &
-else
-  .venv/bin/uvicorn backend.main:app \
-    --host 127.0.0.1 --port 8000 \
-    --log-level warning &
+# v3.0.0: the backend is never launched as root. Live packet capture needs
+# CAP_NET_RAW instead — one-time setup:
+#     sudo setcap cap_net_raw+ep "$ROOT/.venv/bin/python3"
+# (On macOS there is no setcap; run with sudo there only if you need live capture.)
+if [ "$(id -u)" -eq 0 ]; then
+  echo -e "${YELLOW}[warn]${RESET}  Running as root is not recommended. Prefer:"
+  echo -e "         sudo setcap cap_net_raw+ep \"$ROOT/.venv/bin/python3\"   (one-time, Linux)"
 fi
+"$ROOT/.venv/bin/uvicorn" backend.main:app \
+  --host 127.0.0.1 --port 8000 \
+  --log-level warning &
 BACKEND_PID=$!
 
 # Wait until the backend is actually accepting connections (max 15s)

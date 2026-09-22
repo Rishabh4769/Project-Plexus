@@ -11,12 +11,13 @@ Security:
 
 import asyncio
 import json
+import re
 import time
 from contextlib import asynccontextmanager
 from queue import Empty, Queue
 from typing import Optional
 
-from fastapi import Depends, FastAPI, Header, HTTPException, WebSocket, WebSocketDisconnect, File, UploadFile
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, WebSocket, WebSocketDisconnect, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from pydantic import BaseModel, Field, field_validator
@@ -30,6 +31,7 @@ from backend.notifications import notify
 
 
 from backend.auth import login, register_first_user, revoke_token, validate_token
+from backend.ratelimit import is_rate_limited, record_failed_attempt, reset_attempts
 from backend.database import (
     get_alerts,
     get_graph_data,
@@ -68,7 +70,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="PLEXUS API",
-    version="2.0.0",
+    version="3.0.0",
     lifespan=lifespan,
     docs_url="/api/docs",
     redoc_url=None,
@@ -81,6 +83,9 @@ app.add_middleware(
     allow_methods=["GET", "POST", "DELETE"],
     allow_headers=["Content-Type", "X-Auth-Token"],
 )
+
+# ── Upload limits ───────────────────────────────────────────────────────── #
+MAX_PCAP_BYTES = 100 * 1024 * 1024  # 100 MB — streamed to disk in chunks
 
 # ── Application state ─────────────────────────────────────────────────── #
 
@@ -248,11 +253,19 @@ async def auth_setup(body: SetupRequest):
 
 
 @app.post("/api/auth/login")
-async def auth_login(body: LoginRequest):
+async def auth_login(body: LoginRequest, request: Request):
+    # Brute-force throttle: 5 failed attempts per minute, keyed by client IP + username.
+    client_ip = request.client.host if request.client else "unknown"
+    rl_key = f"{client_ip}:{body.username.strip().lower()}"
+    if is_rate_limited(rl_key):
+        applog.warning("auth", "Login rate-limited", username=body.username)
+        raise HTTPException(status_code=429, detail="Too many attempts — try again in a minute")
     ok, result = login(body.username, body.password)
     if not ok:
+        record_failed_attempt(rl_key)
         applog.warning("auth", "Failed login attempt", username=body.username, detail=result)
         raise HTTPException(status_code=401, detail=result)
+    reset_attempts(rl_key)
     applog.info("auth", "User logged in", username=body.username)
     return {"token": result, "username": body.username}
 
@@ -276,9 +289,28 @@ async def auth_me(username: str = Depends(require_auth)):
     return {"username": username}
 
 
+# ── WebSocket origins allowed to open a stream (browsers always send Origin
+# on the WS handshake; rejecting anything else stops random websites from
+# siphoning the live packet feed via ws://127.0.0.1:8000).
+ALLOWED_WS_ORIGINS = {"http://localhost:5173", "http://127.0.0.1:5173"}
+
+# Close codes: 4401 = unauthorized, 4403 = forbidden origin.
+# NOTE: we accept() first, then close with a code. Closing *before* accept
+# makes Starlette answer HTTP 403, which hides the reason from the client.
+# Nothing is transmitted between accept and close, so no data leaks.
 @app.websocket("/ws/stream")
-async def websocket_stream(websocket: WebSocket):
+async def websocket_stream(websocket: WebSocket, token: str = Query("")):
     await websocket.accept()
+    origin = websocket.headers.get("origin")
+    if origin and origin not in ALLOWED_WS_ORIGINS:
+        await websocket.close(code=4403)
+        return
+    # Browsers can't set custom headers on a WS handshake, so the session
+    # token travels as a query param.
+    username = validate_token(token) if token else None
+    if username is None:
+        await websocket.close(code=4401)
+        return
     state.ws_clients.add(websocket)
     await websocket.send_text(json.dumps({
         "type": "status",
@@ -386,15 +418,27 @@ async def analyze_pcap(
     """
     Accepts a PCAP upload, processes its packet streams into network flows,
     and runs the trained XGBoost classifier to detect threats.
+
+    Uploads are streamed to disk in chunks and capped at MAX_PCAP_BYTES —
+    the whole file is never held in RAM.
     """
-    if not file.filename.endswith((".pcap", ".pcapng")):
+    filename = file.filename or ""
+    if not filename.endswith((".pcap", ".pcapng")):
         raise HTTPException(status_code=400, detail="Only standard .pcap or .pcapng files are supported")
 
-    # Save to a temporary file
+    # Save to a temporary file, streaming in chunks with a hard size cap
     temp_fd, temp_path = tempfile.mkstemp(suffix=".pcap")
     try:
+        size = 0
         with os.fdopen(temp_fd, "wb") as tmp:
-            tmp.write(await file.read())
+            while True:
+                chunk = await file.read(1024 * 1024)  # 1 MB chunks
+                if not chunk:
+                    break
+                size += len(chunk)
+                if size > MAX_PCAP_BYTES:
+                    raise HTTPException(status_code=413, detail="PCAP too large (max 100 MB)")
+                tmp.write(chunk)
 
         aggregator = FlowAggregator(flow_timeout=999999.0)  # High timeout for file processing
         model_loader = NIDSModelLoader()
@@ -605,6 +649,10 @@ async def session_top_talkers(
 
 @app.get("/api/sessions/{session_id}/report")
 async def session_report(session_id: str, _: str = Depends(require_auth)):
+    # Strict allowlist: the id is interpolated into Content-Disposition,
+    # so anything outside [A-Za-z0-9_-] is rejected outright.
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", session_id):
+        raise HTTPException(status_code=404, detail="Session not found")
     summary = get_session_summary(session_id)
     if summary["packet_count"] == 0 and summary["alert_count"] == 0:
         raise HTTPException(status_code=404, detail="Session not found")

@@ -6,7 +6,7 @@
 
 const BASE = "/api";
 
-function getToken() {
+export function getToken() {
   return sessionStorage.getItem("ns_token") ?? "";
 }
 

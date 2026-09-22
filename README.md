@@ -1,4 +1,4 @@
-# ◈ PLEXUS v2.0 (NIDS Integrated)
+# ◈ PLEXUS v3.0 (NIDS Integrated — Security Hardened)
 
 [![FastAPI](https://img.shields.io/badge/FastAPI-005571?style=for-the-badge&logo=fastapi)](https://fastapi.tiangolo.com)
 [![React](https://img.shields.io/badge/React-20232A?style=for-the-badge&logo=react)](https://react.dev)
@@ -6,7 +6,7 @@
 [![Scapy](https://img.shields.io/badge/Scapy-D94A38?style=for-the-badge&logo=wireshark)](https://scapy.net)
 [![SQLite](https://img.shields.io/badge/SQLite-07405E?style=for-the-badge&logo=sqlite)](https://sqlite.org)
 
-PLEXUS v2.0 is a state-of-the-art **Network Intrusion Detection System (NIDS)** and traffic monitoring suite. Combining real-time Scapy packet capturing, bidirectional network flow aggregation, and a tuned **XGBoost machine learning classifier** trained on the *CICIDS2017* benchmark dataset, PLEXUS delivers live threat detection and native desktop alerts.
+PLEXUS v3.0 is a state-of-the-art **Network Intrusion Detection System (NIDS)** and traffic monitoring suite. Combining real-time Scapy packet capturing, bidirectional network flow aggregation, and a tuned **XGBoost machine learning classifier** trained on the *CICIDS2017* benchmark dataset, PLEXUS delivers live threat detection and native desktop alerts. See [VERSION.md](VERSION.md) for the v3.0.0 security-hardening changelog.
 
 ---
 

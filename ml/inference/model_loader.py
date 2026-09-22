@@ -32,6 +32,26 @@ class NIDSModelLoader:
         
         self.load_artifacts()
 
+    @staticmethod
+    def _assert_safe_permissions(path: Path) -> None:
+        """
+        joblib.load() unpickles its input — arbitrary code execution if the
+        file is malicious. At minimum, the artifact must not be
+        group/world-writable, or anyone on the box could swap in a
+        weaponised model. Warn loudly instead of failing: the file may
+        legitimately live on shared media during development.
+        """
+        try:
+            mode = path.stat().st_mode
+        except OSError:
+            return
+        if mode & 0o022:
+            log.warning(
+                "Model artifact %s is group/world-writable (mode %o). "
+                "Restrict it (chmod 600) — joblib unpickles this file.",
+                path, mode & 0o777,
+            )
+
     def load_artifacts(self):
         """Loads XGBoost classifier, StandardScaler, and the selected feature spec."""
         try:
@@ -40,9 +60,11 @@ class NIDSModelLoader:
                 return
 
             log.info("Loading NIDS XGBoost classifier...")
+            self._assert_safe_permissions(self.model_path)
             self.model = joblib.load(self.model_path)
             
             log.info("Loading feature scaler...")
+            self._assert_safe_permissions(self.scaler_path)
             self.scaler = joblib.load(self.scaler_path)
             
             log.info("Loading feature specifications...")
