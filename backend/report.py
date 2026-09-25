@@ -1,8 +1,15 @@
 """
 report.py — PDF report generation for a PLEXUS session.
+
+The default report is the 'Night Dossier' template from
+backend/report_templates. The original generator is kept intact as
+_generate_legacy_pdf() and is used automatically if the template import
+or rendering fails, or when PLEXUS_LEGACY_REPORT=1 is set in the
+environment.
 """
 
 import io
+import os
 from reportlab.lib.pagesizes import A4
 from reportlab.lib import colors
 from reportlab.lib.units import inch
@@ -15,8 +22,59 @@ from reportlab.lib.enums import TA_CENTER
 
 from backend.database import get_packets, get_alerts, get_port_usage, get_session_summary  # noqa: E402
 
+# ── Active template: Night Dossier ─────────────────────────────────────── #
 
-# ── Palette (professional neutral palette, no neon) ────────────────────── #
+DEFAULT_TEMPLATE = "night_dossier"
+
+
+def _capture_iface() -> str | None:
+    """Best-effort: interface of the currently running capture, if any."""
+    try:
+        from backend.main import state  # lazy: avoids circular import
+        sniffer = getattr(state, "sniffer", None)
+        return getattr(sniffer, "iface", None) if sniffer is not None else None
+    except Exception:
+        return None
+
+
+def _collect_report_data(session_id: str) -> dict:
+    """Adapt DB rows to the shape backend/report_templates expects."""
+    summary = get_session_summary(session_id)
+    # DB returns newest-first; the dossier reads chronologically.
+    packets = list(reversed(get_packets(session_id, limit=100)))
+    alerts = list(reversed(get_alerts(session_id, limit=200)))
+    iface = _capture_iface()
+    return {
+        "session_id":   session_id,
+        "started_at":   summary["started_at"] or "—",
+        "ended_at":     packets[-1]["timestamp"] if packets else "—",
+        "iface":        f"Live capture — {iface}" if iface else "Live capture",
+        "packet_count": summary["packet_count"],
+        "alert_count":  summary["alert_count"],
+        "packets":      packets,
+        "alerts":       alerts,
+        "port_usage":   get_port_usage(session_id),
+    }
+
+
+def generate_pdf(session_id: str) -> bytes:
+    """Return the PDF as raw bytes (suitable for a streaming HTTP response)."""
+    if os.environ.get("PLEXUS_LEGACY_REPORT") != "1":
+        try:
+            from backend.report_templates import night_dossier
+            return night_dossier.generate(_collect_report_data(session_id))
+        except Exception as exc:  # the template must never break the download
+            try:
+                from backend.logger import log as applog
+                applog(f"report: {DEFAULT_TEMPLATE} failed ({exc}); using legacy template")
+            except Exception:
+                pass
+    return _generate_legacy_pdf(session_id)
+
+
+# ── Legacy generator (fallback) ───────────────────────────────────────── #
+
+# Palette (professional neutral palette, no neon)
 _SLATE_DARK   = colors.HexColor("#1E2533")
 _SLATE_MID    = colors.HexColor("#2C3547")
 _SLATE_LIGHT  = colors.HexColor("#3D4D66")
@@ -44,13 +102,13 @@ def _header_style(bg: colors.Color) -> TableStyle:
         ("FONTSIZE",    (0, 1), (-1, -1), 8),
         ("ROWBACKGROUNDS", (0, 1), (-1, -1), [_ROW_ODD, _ROW_EVEN]),
         ("GRID",        (0, 0), (-1, -1), 0.5, _BORDER),
-        ("LEFTPADDING",  (0, 0), (-1, -1), 6),
+        ("LEFTPADDING", (0, 0), (-1, -1), 6),
         ("RIGHTPADDING", (0, 0), (-1, -1), 6),
     ])
 
 
-def generate_pdf(session_id: str) -> bytes:
-    """Return the PDF as raw bytes (suitable for a streaming HTTP response)."""
+def _generate_legacy_pdf(session_id: str) -> bytes:
+    """Original PLEXUS report. Kept as the fallback generator."""
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(
         buffer,

@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import styles from "./CaptureBar.module.css";
 
 const FILTERS = [
@@ -11,10 +11,18 @@ const FILTERS = [
 
 export default function CaptureBar({
   capturing, sessionId, packetTotal, alertTotal,
-  settings, onStart, onStop, onApplySettings, onClearLogs, onExportPdf,
+  settings, interfaces, onStart, onStop, onApplySettings, onClearLogs, onExportPdf,
 }) {
   const [localSettings, setLocalSettings] = useState(settings);
   const [settingsOpen,  setSettingsOpen]  = useState(false);
+
+  // The default interface is auto-selected after /api/interfaces loads —
+  // sync it into the form so the picker reflects the active value.
+  useEffect(() => {
+    if (settings.iface) {
+      setLocalSettings((prev) => ({ ...prev, iface: settings.iface }));
+    }
+  }, [settings.iface]);
 
   function handleStart() { onStart(localSettings); }
 
@@ -24,38 +32,31 @@ export default function CaptureBar({
     setSettingsOpen(false);
   }
 
-  function set(key, value) {
-    setLocalSettings((p) => ({ ...p, [key]: value }));
-  }
+  const set = (k, v) => setLocalSettings((p) => ({ ...p, [k]: v }));
 
   return (
-    <header className={styles.bar}>
+    <header className={styles.captureBar}>
       <div className={styles.row}>
-        {/* Left: action buttons */}
+        {/* Left: primary actions */}
         <div className={styles.actions}>
-          <button
-            className={`${styles.btn} ${styles.primary} ${!capturing ? styles.glowActive : ""}`}
-            onClick={handleStart}
-            disabled={capturing}
-            aria-label="Start capture"
-          >
-            <svg width="11" height="11" viewBox="0 0 12 12" fill="currentColor"><polygon points="2,1 11,6 2,11"/></svg>
-            Start Monitoring
-          </button>
-          <button
-            className={`${styles.btn} ${styles.danger} ${capturing ? styles.pulseDanger : ""}`}
-            onClick={onStop}
-            disabled={!capturing}
-            aria-label="Stop capture"
-          >
-            <svg width="10" height="10" viewBox="0 0 10 10" fill="currentColor"><rect width="10" height="10" rx="1"/></svg>
-            Stop
-          </button>
-
-          <div className={styles.sep} />
+          {!capturing ? (
+            <button className={`${styles.btn} ${styles.primary}`} onClick={handleStart}>
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor">
+                <polygon points="6 3 20 12 6 21 6 3"/>
+              </svg>
+              Start Capture
+            </button>
+          ) : (
+            <button className={`${styles.btn} ${styles.danger}`} onClick={onStop}>
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
+                <rect x="6" y="6" width="12" height="12" rx="2"/>
+              </svg>
+              Stop
+            </button>
+          )}
 
           <button
-            className={`${styles.btn} ${styles.ghost} ${settingsOpen ? styles.ghostActive : ""}`}
+            className={`${styles.btn} ${styles.ghost} ${settingsOpen ? styles.open : ""}`}
             onClick={() => setSettingsOpen((v) => !v)}
             aria-expanded={settingsOpen}
           >
@@ -107,6 +108,23 @@ export default function CaptureBar({
           <h3 className={styles.panelTitle}>Anomaly Detection Thresholds</h3>
           <p className={styles.panelSubtitle}>Configure rule-based scanner sensitivity thresholds. Changes apply dynamically.</p>
           <div className={styles.panelGrid}>
+            <FormField
+              label="Network Interface"
+              description="Interface to sniff — loopback, LAN (Ethernet) and Wi-Fi are listed separately. Applies on next start."
+            >
+              <select
+                value={localSettings.iface ?? ""}
+                onChange={(e) => set("iface", e.target.value || null)}
+              >
+                <option value="">All interfaces</option>
+                {(interfaces ?? []).map((i) => (
+                  <option key={i.name} value={i.name}>
+                    {i.name} ({i.iface_type})
+                  </option>
+                ))}
+              </select>
+            </FormField>
+
             <FormField 
               label="Capture Filter"
               description="Applies BPF filtering (e.g. TCP only) at kernel level to capture matching packets."
@@ -143,6 +161,16 @@ export default function CaptureBar({
             >
               <input type="number" min="1" max="1000000" value={localSettings.max_packets_flood}
                 onChange={(e) => set("max_packets_flood", Number(e.target.value))} />
+            </FormField>
+
+            <FormField
+              label="Packet Limit"
+              description="Auto-stop capture after this many packets (e.g. 1500 for an ML batch). Blank = unlimited."
+            >
+              <input type="number" min="1" max="1000000"
+                value={localSettings.max_packets ?? ""}
+                placeholder="Unlimited"
+                onChange={(e) => set("max_packets", e.target.value ? Number(e.target.value) : null)} />
             </FormField>
           </div>
           <div className={styles.panelActions}>

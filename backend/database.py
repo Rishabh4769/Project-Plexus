@@ -11,6 +11,17 @@ from pathlib import Path
 DB_PATH = Path(__file__).parent.parent / "network_traffic.db"
 
 
+# Alert severity for graph dot coloring (single source of truth).
+#   critical -> red dot   (active attack: flood, ML-confirmed anomaly)
+#   normal   -> yellow dot (reconnaissance: port scan)
+# Unknown future alert types default to "normal".
+ALERT_SEVERITY = {
+    "Flooding":        "critical",
+    "ML NIDS Anomaly": "critical",
+    "Port Scanning":   "normal",
+}
+
+
 def get_connection() -> sqlite3.Connection:
     conn = sqlite3.connect(str(DB_PATH))
     conn.row_factory = sqlite3.Row
@@ -217,7 +228,7 @@ def get_graph_data(session_id: str) -> dict:
             (session_id,),
         ).fetchall()
         alert_rows = conn.execute(
-            "SELECT timestamp FROM alerts WHERE session_id = ? ORDER BY timestamp",
+            "SELECT timestamp, alert_type FROM alerts WHERE session_id = ? ORDER BY timestamp",
             (session_id,),
         ).fetchall()
 
@@ -230,10 +241,16 @@ def get_graph_data(session_id: str) -> dict:
         return None
 
     pkt_times   = [t for t in (to_epoch(r["timestamp"]) for r in pkt_rows)   if t is not None]
-    alert_times = [t for t in (to_epoch(r["timestamp"]) for r in alert_rows) if t is not None]
+    alert_times = []
+    alert_sevs  = []
+    for r in alert_rows:
+        t = to_epoch(r["timestamp"])
+        if t is not None:
+            alert_times.append(t)
+            alert_sevs.append(ALERT_SEVERITY.get(r["alert_type"], "normal"))
 
     if not pkt_times and not alert_times:
-        return {"labels": [], "packets": [], "alerts": []}
+        return {"labels": [], "packets": [], "alerts": [], "alert_severity": []}
 
     all_times = pkt_times + alert_times
     min_ts, max_ts = min(all_times), max(all_times)
@@ -249,10 +266,23 @@ def get_graph_data(session_id: str) -> dict:
         for i in range(buckets)
     ]
 
+    # Per-bucket severity for dot coloring: critical wins over normal,
+    # None where the bucket has no alerts.
+    sev_per_bucket = [None] * buckets
+    if alert_times:
+        bucket_idx = np.clip(np.digitize(alert_times, edges) - 1, 0, buckets - 1)
+        for i, s in zip(bucket_idx, alert_sevs):
+            i = int(i)
+            if s == "critical":
+                sev_per_bucket[i] = "critical"
+            elif sev_per_bucket[i] is None:
+                sev_per_bucket[i] = "normal"
+
     return {
         "labels":  labels,
         "packets": pkt_counts.tolist(),
         "alerts":  alert_counts.tolist(),
+        "alert_severity": sev_per_bucket,
     }
 
 

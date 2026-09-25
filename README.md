@@ -5,15 +5,19 @@
 [![XGBoost](https://img.shields.io/badge/XGBoost-1572B6?style=for-the-badge&logo=python)](https://xgboost.readthedocs.io)
 [![Scapy](https://img.shields.io/badge/Scapy-D94A38?style=for-the-badge&logo=wireshark)](https://scapy.net)
 [![SQLite](https://img.shields.io/badge/SQLite-07405E?style=for-the-badge&logo=sqlite)](https://sqlite.org)
+[![Laya](https://img.shields.io/badge/Laya-FF6B6B?style=for-the-badge&logo=python)](https://huggingface.co/convaiinnovations/laya-typed-decisions)
 
-PLEXUS v3.0 is a state-of-the-art **Network Intrusion Detection System (NIDS)** and traffic monitoring suite. Combining real-time Scapy packet capturing, bidirectional network flow aggregation, and a tuned **XGBoost machine learning classifier** trained on the *CICIDS2017* benchmark dataset, PLEXUS delivers live threat detection and native desktop alerts. See [VERSION.md](VERSION.md) for the v3.0.0 security-hardening changelog.
+PLEXUS v3.0 is a state-of-the-art **Network Intrusion Detection System (NIDS)** and traffic monitoring suite. Combining real-time Scapy packet capturing, bidirectional network flow aggregation, and a tuned **XGBoost machine learning classifier** trained on the *CICIDS2017* benchmark dataset, PLEXUS delivers live threat detection and native desktop alerts. See [VERSION.md](VERSION.md) for the v3.0.0 security-hardening changelog and [flow.md](flow.md) for the detection-pipeline workflows.
 
 ---
 
 ## Key Features
 
 * **Real-time Capture & Decoupled Sniffer:** Multithreaded Scapy engine extracting src/dst IPs, ports, TTL, checksums, and hex payload previews.
+* **Rule-based Detection (fast path):** Port-scan and flood heuristics evaluated per-packet in the capture callback — alerts surface in ~0.5 s. Tunable thresholds (flood default: 1500 packets / 10 s window).
 * **ML-based NIDS Engine:** Tuned XGBoost classifier trained on Monday (Benign), Tuesday (SSH/FTP attacks), and Friday (PortScan) datasets, hitting **99.97% accuracy** and a **0.995 F1-score**.
+* **Laya Second Opinion (beta):** `convaiinnovations/laya-typed-decisions` (ModernBERT-large) re-scores XGBoost-flagged flows with an attack probability + category note. Never replaces XGBoost; disable with `PLEXUS_DISABLE_LAYA=1`.
+* **Severity-coded Traffic Graph:** Alert dots appear only where alerts exist — yellow for normal (port scans), red for critical (floods, ML anomalies).
 * **Flow Aggregation:** Automatically groups raw packet packets into bidirectional network conversation flows and calculates 20 distinct statistical features in real-time.
 * **Native OS Desktop Alerts:** Zero-dependency native macOS slide-in notifications (using `osascript` AppleScript with audio alert cues) and Linux `notify-send` alerts.
 * **PCAP Offline Analysis:** Batch upload `.pcap` or `.pcapng` files to reconstruct and analyze network sessions for threats.
@@ -37,7 +41,7 @@ PLEXUS v1/
 ├── frontend/
 │   ├── src/
 │   │   ├── components/     # App views (Dashboard, Alerts, Packet Table, Charts)
-│   │   ├── hooks/          # API & WebSockets connection managers
+│   │   ├── hooks/          # API & WebSocket managers (single-socket, alert dedup)
 │   │   └── App.jsx
 │   ├── package.json
 │   └── index.html
@@ -46,15 +50,28 @@ PLEXUS v1/
 │   │   ├── model.joblib    # Trained XGBoost model
 │   │   ├── scaler.joblib   # Trained StandardScaler
 │   │   └── feature_spec.json
+│   ├── inference/
+│   │   └── laya_scorer.py  # Laya second-opinion scorer (beta)
 │   ├── data_cleaning/      # Data cleaning pipelines & validation checks
 │   │   ├── clean_data.py
 │   │   └── validate_data.py
 │   └── train/              # Offline classifier training scripts
 │       ├── export_features.py
 │       └── train_xgboost.py
+├── flow.md                 # Detection workflows, data-flow & latency notes
+├── VERSION.md              # Version history, bugs & fixes
 ├── PLEXUS.sh               # Root orchestration launch script (Backend + Frontend)
 └── README.md
 ```
+
+---
+
+## Documentation
+
+* **[flow.md](flow.md)** — Detection workflows: rule-based vs ML paths, broadcast pipeline, alert-severity colour mapping, and measured latency.
+* **[VERSION.md](VERSION.md)** — Version history with bugs, fixes, and known issues.
+* **[MD/PRD.md](MD/PRD.md)** — Product requirements document.
+* **[MD/Structure.md](MD/Structure.md)** — Codebase structure reference.
 
 ---
 
@@ -119,6 +136,24 @@ Interactive OpenAPI documentation is hosted at `http://127.0.0.1:8000/api/docs` 
 | `POST` | `/api/capture/settings` | Adjust live detection parameters |
 | `GET`  | `/api/sessions/{id}/report` | Generate PDF report |
 | `WS`   | `/ws/stream` | Websocket raw logs/alerts stream |
+
+---
+
+## Troubleshooting
+
+### Login fails / locked out of your account
+
+User accounts are stored in the `users` table inside `network_traffic.db` (project root). If you cannot log in and cannot recover the credentials, reset the login database:
+
+1. Stop the backend (`Ctrl+C` in its terminal).
+2. Delete the database file:
+   ```bash
+   rm network_traffic.db
+   ```
+3. Restart with `sudo ./PLEXUS.sh`.
+4. With no users left in the database, PLEXUS returns to its first-run state — use the initial-setup screen to create a new admin user.
+
+> Note: deleting `network_traffic.db` also wipes captured packets, alerts, and session history. Back it up first if that history matters.
 
 ---
 

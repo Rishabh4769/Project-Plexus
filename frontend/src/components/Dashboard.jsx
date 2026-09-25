@@ -1,7 +1,6 @@
 import React, { useEffect, useState } from "react";
+import { api } from "../api";
 import styles from "./Dashboard.module.css";
-
-const API = "/api";
 
 export default function Dashboard({
   capturing,
@@ -17,7 +16,7 @@ export default function Dashboard({
   // Fetch top-talkers when session changes
   useEffect(() => {
     if (!sessionId) return;
-    fetch(`${API}/sessions/${encodeURIComponent(sessionId)}/top-talkers?limit=8`)
+    api.get(`/sessions/${encodeURIComponent(sessionId)}/top-talkers?limit=8`)
       .then((r) => (r.ok ? r.json() : []))
       .then(setTalkers)
       .catch(() => {});

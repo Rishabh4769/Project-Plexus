@@ -131,14 +131,28 @@ export default function TrafficChart({ sessionId, capturing }) {
       {
         label:           "Alerts / interval",
         data:            data.alerts,
-        borderColor:     "#DA3633",
-        backgroundColor: "rgba(218,54,51,0.1)",
+        borderColor:     "rgba(218,54,51,0.35)",
+        backgroundColor: "rgba(218,54,51,0.08)",
         fill:            true,
         tension:         0.4,
-        pointRadius:     4,
-        pointHoverRadius:6,
         borderWidth:     2,
         pointStyle:      "rect",
+        // Dots only where alerts exist, colored by severity:
+        // normal (e.g. port scan) = yellow, critical (e.g. flood) = red.
+        pointRadius: (ctx) => (data.alerts[ctx.dataIndex] > 0 ? 5 : 0),
+        pointHoverRadius: 7,
+        pointBackgroundColor: (ctx) => {
+          const sev = data.alert_severity?.[ctx.dataIndex];
+          if (sev === "critical") return "#DA3633";
+          if (sev === "normal")   return "#E3B341";
+          return "rgba(218,54,51,0.4)";
+        },
+        pointBorderColor: (ctx) => {
+          const sev = data.alert_severity?.[ctx.dataIndex];
+          if (sev === "critical") return "#8F1D1D";
+          if (sev === "normal")   return "#9A6E14";
+          return "rgba(218,54,51,0.4)";
+        },
       },
     ],
   };

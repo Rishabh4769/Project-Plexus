@@ -9,6 +9,7 @@ import TrafficChart     from "./components/TrafficChart";
 import Sessions         from "./components/Sessions";
 import LoginPage        from "./pages/LoginPage";
 import { useCapture }   from "./hooks/useCapture";
+import { useWebSocket } from "./hooks/useWebSocket";
 import { api }          from "./api";
 import styles           from "./App.module.css";
 
@@ -22,8 +23,12 @@ export default function App() {
   const {
     capturing, sessionId, iface, packetTotal, alertTotal,
     packets, alerts, error, settings, interfaces,
-    startCapture, stopCapture, applySettings, clearLogs,
+    startCapture, stopCapture, applySettings, clearLogs, handleMessage,
   } = useCapture();
+
+  // Live packet/alert stream. Reconnects on auth change so the WS handshake
+  // always carries the current session token.
+  useWebSocket(handleMessage, user);
 
   // Keep graph session in sync with live session unless user picked another one
   React.useEffect(() => {

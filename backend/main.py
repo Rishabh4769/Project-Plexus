@@ -125,7 +125,7 @@ class CaptureStartRequest(BaseModel):
     iface:             Optional[str] = Field(None)
     time_window:       int = Field(10,  ge=1, le=3600)
     max_ports_scanned: int = Field(5,   ge=1, le=65535)
-    max_packets_flood: int = Field(30,  ge=1, le=1_000_000)
+    max_packets_flood: int = Field(1500, ge=1, le=1_000_000)
 
     @field_validator("filter")
     @classmethod
@@ -231,6 +231,7 @@ async def _queue_broadcaster() -> None:
                 "packet_total": state.packet_total,
                 "alert_total": state.alert_total,
                 "session_id": state.session_id,
+                "capturing": state.capturing,
             })
 
 # ═══════════════════════════════════════════════════════════════════════

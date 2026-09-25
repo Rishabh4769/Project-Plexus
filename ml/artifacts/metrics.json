@@ -1,0 +1,68 @@
+{
+  "algorithm": "XGBoost",
+  "features_used": [
+    "Packet Length Mean",
+    "Fwd Packet Length Mean",
+    "Average Packet Size",
+    "Avg Fwd Segment Size",
+    "Max Packet Length",
+    "Fwd Packet Length Max",
+    "Avg Bwd Segment Size",
+    "min_seg_size_forward",
+    "Bwd Packet Length Mean",
+    "Min Packet Length",
+    "Fwd Packet Length Std",
+    "Packet Length Variance",
+    "Bwd Packets/s",
+    "Packet Length Std",
+    "Total Length of Fwd Packets",
+    "Bwd Packet Length Max",
+    "Init_Win_bytes_forward",
+    "Bwd Header Length",
+    "Flow Bytes/s",
+    "Fwd IAT Min"
+  ],
+  "n_features": 20,
+  "train_samples": 212288,
+  "test_samples": 53073,
+  "train_time_sec": 1.33,
+  "hyperparameters": {
+    "n_estimators": 300,
+    "max_depth": 6,
+    "learning_rate": 0.1,
+    "subsample": 0.8,
+    "colsample_bytree": 0.8,
+    "min_child_weight": 5,
+    "gamma": 0.1,
+    "reg_alpha": 0.1,
+    "reg_lambda": 1.0,
+    "eval_metric": "logloss",
+    "use_label_encoder": false,
+    "random_state": 42,
+    "n_jobs": -1,
+    "tree_method": "hist",
+    "scale_pos_weight": 40.2851
+  },
+  "metrics": {
+    "accuracy": 0.999755,
+    "precision": 0.989992,
+    "recall": 1.0,
+    "f1_score": 0.994971,
+    "roc_auc": 0.999999,
+    "false_positive_rate": 0.000251,
+    "confusion_matrix": [
+      [
+        51774,
+        13
+      ],
+      [
+        0,
+        1286
+      ]
+    ],
+    "TP": 1286,
+    "TN": 51774,
+    "FP": 13,
+    "FN": 0
+  }
+}

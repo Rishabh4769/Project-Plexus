@@ -18,6 +18,14 @@ sys.path.append(str(Path(__file__).resolve().parent.parent))
 from ml.features.flow_aggregator import FlowAggregator
 from ml.inference.model_loader import NIDSModelLoader
 
+# Laya decision-model second opinion (optional). laya_scorer degrades
+# gracefully when the `laya` package or its weights are missing, so this
+# import is always safe — verdicts are purely additive to alerts.
+try:
+    from ml.inference.laya_scorer import second_opinion as laya_second_opinion
+except Exception:
+    laya_second_opinion = None
+
 
 # Whitelist of safe BPF filter expressions accepted from the API
 VALID_BPF_FILTERS = {"tcp", "udp", "icmp", "ip"}
@@ -33,7 +41,7 @@ class PacketSniffer:
         iface: str | None = None,
         time_window: int = 10,
         max_ports_scanned: int = 5,
-        max_packets_flood: int = 30,
+        max_packets_flood: int = 1500,
     ) -> None:
         self.packet_queue      = packet_queue
         self.alert_queue       = alert_queue
@@ -169,6 +177,16 @@ class PacketSniffer:
                             f"ML NIDS detected Attack on flow {flow_key} "
                             f"(Confidence: {prob * 100:.2f}%)"
                         )
+                        # Laya second opinion (beta): independent calibrated
+                        # verdict from the decision model. Purely additive —
+                        # any failure leaves the alert exactly as before.
+                        if laya_second_opinion is not None:
+                            try:
+                                verdict = laya_second_opinion(flow_key, protocol, features)
+                                if verdict:
+                                    alert_msg += f" | {verdict}"
+                            except Exception as laya_err:
+                                print(f"[PLEXUS/sniffer/Laya] second opinion failed: {laya_err}")
                         self.alert_queue.put((
                             ts, src_ip, "ML NIDS Anomaly", alert_msg, self.session_id
                         ))
@@ -177,8 +195,15 @@ class PacketSniffer:
             print(f"[PLEXUS/sniffer/ML] Inference Error: {ml_err}")
 
         # ── Rule-based Anomaly detection ────────────────────────────── #
-        self._connections[src_ip].add(dst_port)
-        self._packet_counts[src_ip] += 1
+        # Loopback chatter (browser ↔ Vite, frontend ↔ backend API/WS) is
+        # not hostile — never count it toward scan/flood heuristics, or
+        # PLEXUS flags its own dashboard as a port scanner. Packets are
+        # still logged below; only the detection is skipped.
+        is_loopback = src_ip.startswith("127.") or src_ip == "::1"
+
+        if not is_loopback:
+            self._connections[src_ip].add(dst_port)
+            self._packet_counts[src_ip] += 1
 
 
         now = time.time()

@@ -15,8 +15,14 @@ network_traffic.db
 .DS_Store
 .vscode/
 
-# ML artifacts (added once ml/ exists)
-ml/artifacts/
+# ML artifacts — ignore the dir by default, but keep the trained runtime files tracked
+# so a fresh clone can run detection without retraining. The large
+# cleaned_data.parquet stays ignored (regenerable via ml/data_cleaning/clean_data.py).
+ml/artifacts/*
+!ml/artifacts/model.joblib
+!ml/artifacts/scaler.joblib
+!ml/artifacts/feature_spec.json
+!ml/artifacts/metrics.json
 data/captured/
 data/*.csv
 data_cleaning/datasets/*.csv

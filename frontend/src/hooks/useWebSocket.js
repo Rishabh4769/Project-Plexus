@@ -1,62 +1,85 @@
 /**
  * useWebSocket.js
- * Manages a WebSocket connection to the PLEXUS backend.
- * Auto-reconnects with exponential back-off on unexpected disconnection.
+ * One live WebSocket per browser tab to the PLEXUS backend.
+ *
+ * Design notes (2026-09-24 duplicate-alert fix):
+ *  - onMessage is consumed through a ref so parent re-renders never
+ *    re-trigger the effect (re-running the effect used to pile up sockets,
+ *    and every socket received the same broadcast → N duplicate alerts).
+ *  - Each effect run owns a `cancelled` flag + its reconnect timer, so a
+ *    stale socket's onclose can never schedule a zombie reconnect after
+ *    the effect re-ran.
+ *  - Reconnects only when `authKey` changes (login/logout). The token
+ *    travels as a query param because browsers can't set headers on the
+ *    WS handshake.
  */
 
-import { useEffect, useRef, useCallback } from "react";
+import { useEffect, useRef } from "react";
 import { getToken } from "../api.js";
 
 const WS_URL = "ws://127.0.0.1:8000/ws/stream";
 const MAX_BACKOFF_MS = 30_000;
 
-export function useWebSocket(onMessage) {
-  const wsRef        = useRef(null);
-  const backoffRef   = useRef(1_000);
-  const unmountedRef = useRef(false);
-
-  const connect = useCallback(() => {
-    if (unmountedRef.current) return;
-
-    // v3.0.0: the stream now requires auth — the token travels as a query
-    // param because browsers can't set custom headers on WS handshakes.
-    const ws = new WebSocket(`${WS_URL}?token=${encodeURIComponent(getToken())}`);
-    wsRef.current = ws;
-
-    ws.onopen = () => {
-      backoffRef.current = 1_000; // reset back-off on successful connect
-    };
-
-    ws.onmessage = (event) => {
-      try {
-        const data = JSON.parse(event.data);
-        onMessage(data);
-      } catch {
-        // Ignore malformed frames
-      }
-    };
-
-    ws.onclose = (event) => {
-      if (unmountedRef.current) return;
-      if (event.code === 4401) {
-        // Backend rejected our token — bounce to the login screen.
-        window.dispatchEvent(new Event("ns:unauthorized"));
-        return;
-      }
-      const delay = backoffRef.current;
-      backoffRef.current = Math.min(delay * 2, MAX_BACKOFF_MS);
-      setTimeout(connect, delay);
-    };
-
-    ws.onerror = () => ws.close();
-  }, [onMessage]);
+export function useWebSocket(onMessage, authKey) {
+  const onMessageRef = useRef(onMessage);
+  onMessageRef.current = onMessage;
 
   useEffect(() => {
-    unmountedRef.current = false;
+    let cancelled = false;
+    let ws = null;
+    let timer = null;
+    let backoff = 1_000;
+
+    // v3.0.0: the stream requires auth. No token yet (pre-login) → stay
+    // disconnected; the authKey change after login re-runs this effect.
+    const token = getToken();
+    if (!token) return undefined;
+
+    function connect() {
+      if (cancelled) return;
+      // One live socket per tab — never open a second while one is alive.
+      if (ws && (ws.readyState === WebSocket.OPEN ||
+                 ws.readyState === WebSocket.CONNECTING)) {
+        return;
+      }
+
+      ws = new WebSocket(`${WS_URL}?token=${encodeURIComponent(token)}`);
+
+      ws.onopen = () => {
+        backoff = 1_000; // reset back-off on successful connect
+      };
+
+      ws.onmessage = (event) => {
+        try {
+          onMessageRef.current(JSON.parse(event.data));
+        } catch {
+          // Ignore malformed frames
+        }
+      };
+
+      ws.onclose = (event) => {
+        if (cancelled) return;
+        if (event.code === 4401) {
+          // Backend rejected our token — bounce to the login screen.
+          window.dispatchEvent(new Event("ns:unauthorized"));
+          return;
+        }
+        backoff = Math.min(backoff * 2, MAX_BACKOFF_MS);
+        timer = setTimeout(connect, backoff);
+      };
+
+      ws.onerror = () => {
+        try { ws.close(); } catch { /* already closed */ }
+      };
+    }
+
     connect();
+
     return () => {
-      unmountedRef.current = true;
-      wsRef.current?.close();
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+      try { ws?.close(); } catch { /* already closed */ }
+      ws = null;
     };
-  }, [connect]);
+  }, [authKey]);
 }
