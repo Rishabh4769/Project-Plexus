@@ -5,10 +5,13 @@ All queries use parameterised statements to prevent SQL injection.
 
 import sqlite3
 import datetime
+import os
 import numpy as np
 from pathlib import Path
 
-DB_PATH = Path(__file__).parent.parent / "network_traffic.db"
+# Overridable via PLEXUS_DB_PATH so the docker image can persist the
+# database on a mounted volume (compose sets /data/network_traffic.db).
+DB_PATH = Path(os.environ.get("PLEXUS_DB_PATH", Path(__file__).parent.parent / "network_traffic.db"))
 
 
 # Alert severity for graph dot coloring (single source of truth).
@@ -93,6 +96,71 @@ def init_db() -> None:
         c.execute("CREATE INDEX IF NOT EXISTS idx_logs_level     ON app_logs(level)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_logs_ts        ON app_logs(timestamp)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_alerts_session  ON alerts(session_id)")
+        # --- v3.2.0: events table (SIEM common schema; benchmarked against
+        # ECS / OCSF / Wazuh / Splunk CIM — see docs/schema-benchmark-professional-siem.md)
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS events (
+                id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                event_uid      TEXT    NOT NULL UNIQUE,
+                timestamp      TEXT    NOT NULL,
+                ingested_at    TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+                schema_version TEXT    NOT NULL DEFAULT '1.0',
+                event_category TEXT    NOT NULL CHECK (event_category IN
+                    ('authentication','iam','system','host','network','process','file','configuration','application')),
+                event_action   TEXT    NOT NULL,
+                event_type     TEXT    CHECK (event_type IN
+                    ('access','admin','change','connection','creation','deletion','denied','end','error','info','start','user')),
+                outcome        TEXT    CHECK (outcome IN ('success','failure','unknown')),
+                severity_id    INTEGER NOT NULL DEFAULT 1 CHECK (severity_id BETWEEN 0 AND 5),
+                source_type    TEXT    NOT NULL,
+                app            TEXT,
+                user_name      TEXT,
+                src_user_name  TEXT,
+                user_id        INTEGER REFERENCES users(id),
+                src_ip         TEXT,
+                src_port       INTEGER CHECK (src_port BETWEEN 0 AND 65535),
+                dst_ip         TEXT,
+                dst_port       INTEGER CHECK (dst_port BETWEEN 0 AND 65535),
+                host_name      TEXT,
+                session_id     TEXT,
+                message        TEXT,
+                raw            TEXT,
+                raw_hash       TEXT,
+                detail         TEXT
+            )
+        """)
+        c.execute("CREATE INDEX IF NOT EXISTS idx_events_ts       ON events(timestamp)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_events_cat_act  ON events(event_category, event_action, timestamp)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_events_src_ip   ON events(src_ip, timestamp)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_events_user     ON events(user_name, timestamp)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_events_severity ON events(severity_id, timestamp)")
+        # --- v3.2.0: alerts lifecycle + rule identity + pivot columns (additive, idempotent)
+        _alert_cols = {row[1] for row in c.execute("PRAGMA table_info(alerts)")}
+        for _name, _ddl in (
+            ("ingested_at",         "ingested_at TEXT"),
+            ("severity_id",         "severity_id INTEGER CHECK (severity_id BETWEEN 0 AND 5)"),
+            ("rule_id",             "rule_id TEXT"),
+            ("rule_name",           "rule_name TEXT"),
+            ("rule_groups",         "rule_groups TEXT"),
+            ("dst_ip",              "dst_ip TEXT"),
+            ("dst_port",            "dst_port INTEGER"),
+            ("user_name",           "user_name TEXT"),
+            ("host_name",           "host_name TEXT"),
+            ("event_id",            "event_id INTEGER REFERENCES events(id)"),
+            ("event_count",         "event_count INTEGER NOT NULL DEFAULT 1"),
+            ("first_seen",          "first_seen TEXT"),
+            ("last_seen",           "last_seen TEXT"),
+            ("mitre_tactic",        "mitre_tactic TEXT"),
+            ("mitre_technique_id",  "mitre_technique_id TEXT CHECK (mitre_technique_id IS NULL OR mitre_technique_id GLOB 'T[0-9][0-9][0-9][0-9]*')"),
+            ("mitre_technique_name","mitre_technique_name TEXT"),
+            ("status",              "status TEXT NOT NULL DEFAULT 'open'"),
+            ("notes",               "notes TEXT NOT NULL DEFAULT ''"),
+            ("resolved_at",         "resolved_at TEXT"),
+            ("acknowledged_by",     "acknowledged_by TEXT"),
+            ("resolved_by",         "resolved_by TEXT"),
+        ):
+            if _name not in _alert_cols:
+                c.execute(f"ALTER TABLE alerts ADD COLUMN {_ddl}")
         conn.commit()
 
 
@@ -116,6 +184,45 @@ def log_alert(data: tuple) -> None:
             data,
         )
         conn.commit()
+
+
+_EVENT_COLUMNS = (
+    "event_uid", "timestamp", "ingested_at", "schema_version",
+    "event_category", "event_action", "event_type", "outcome", "severity_id",
+    "source_type", "app", "user_name", "src_user_name", "user_id",
+    "src_ip", "src_port", "dst_ip", "dst_port", "host_name",
+    "session_id", "message", "raw", "raw_hash", "detail",
+)
+
+
+def log_event(data: dict) -> int:
+    """Insert one normalized event into the events table; returns the row id.
+
+    Required keys: timestamp (ISO-8601 UTC), event_category, event_action,
+    source_type. event_uid / ingested_at / schema_version / severity_id are
+    filled with writer-side defaults when absent (schema discipline: UUID4
+    identity, UTC ingest time, OCSF severity 0-5)."""
+    import uuid
+    from datetime import datetime, timezone
+
+    row = {col: data.get(col) for col in _EVENT_COLUMNS}
+    if not row["event_uid"]:
+        row["event_uid"] = str(uuid.uuid4())
+    if not row["ingested_at"]:
+        row["ingested_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+    if not row["schema_version"]:
+        row["schema_version"] = "1.0"
+    if row["severity_id"] is None:
+        row["severity_id"] = 1
+    cols = ", ".join(_EVENT_COLUMNS)
+    marks = ", ".join("?" for _ in _EVENT_COLUMNS)
+    with get_connection() as conn:
+        cur = conn.execute(
+            f"INSERT INTO events ({cols}) VALUES ({marks})",
+            tuple(row[col] for col in _EVENT_COLUMNS),
+        )
+        conn.commit()
+        return cur.lastrowid
 
 
 def get_sessions() -> list[dict]:
