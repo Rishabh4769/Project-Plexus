@@ -17,7 +17,9 @@
 import { useEffect, useRef } from "react";
 import { getToken } from "../api.js";
 
-const WS_URL = "ws://127.0.0.1:8000/ws/stream";
+// Host-relative WebSocket URL: works in vite dev (proxied /ws) and behind
+// the docker nginx reverse proxy — no hardcoded backend address.
+const WS_URL = `${window.location.protocol === "https:" ? "wss:" : "ws:"}//${window.location.host}/ws/stream`;
 const MAX_BACKOFF_MS = 30_000;
 
 export function useWebSocket(onMessage, authKey) {

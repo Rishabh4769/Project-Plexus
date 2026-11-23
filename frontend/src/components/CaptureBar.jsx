@@ -84,6 +84,7 @@ export default function CaptureBar({
               Generate PDF Report
             </button>
           )}
+
         </div>
 
         {/* Right: live status banner */}

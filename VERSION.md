@@ -1,5 +1,12 @@
 # PLEXUS — Version History
 
+## v3.1.0 — Native Release (2026-11-23)
+
+- Native-first: PLEXUS runs and is tested natively on macOS; Docker deferred to roughly v7-v8 (Docker files parked in the repo, not deleted).
+- Native desktop notifications (osascript) live-verified as the sole alert path; browser notifications removed.
+- Reference docs added under docs/: SIEM feature research and the professional schema benchmark (ECS / OCSF / Wazuh / Splunk CIM / Zeek).
+- Groundwork for v3.2.0 included: benchmarked events table and alert lifecycle columns added to the SQLite schema (additive migration; full suite 90 tests passing).
+
 ## v3.0.1 — Detection Reliability + Laya Beta (unreleased, 2026-09-24)
 
 Deadline-driven repair pass on the v3.0.0 codebase. Not yet gated — do not

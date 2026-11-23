@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import { api } from "../api";
+import { api, getToken } from "../api";
 
 const MAX_ROWS = 500;
 
@@ -12,7 +12,7 @@ const DEFAULT_SETTINGS = {
   max_packets:       null, // packet limit for auto-stop; null = unlimited
 };
 
-export function useCapture(onMessage) {
+export function useCapture(onMessage, authKey) {
   const [capturing,   setCapturing]   = useState(false);
   const [sessionId,   setSessionId]   = useState(null);
   const [packetTotal, setPacketTotal] = useState(0);
@@ -30,8 +30,11 @@ export function useCapture(onMessage) {
   const alertSig = (a) =>
     `${a.timestamp}|${a.src_ip}|${a.alert_type}|${a.description}`;
 
-  // Load available interfaces once (token may not exist on first paint)
+  // Load available interfaces once logged in (/api/interfaces needs auth).
+  // Refires when the session changes, so the list is never stuck empty
+  // from a pre-login fetch that got a 422.
   useEffect(() => {
+    if (!getToken()) return;
     api.get("/interfaces")
       .then((r) => r.ok ? r.json() : [])
       .then((data) => {
@@ -42,7 +45,7 @@ export function useCapture(onMessage) {
         }
       })
       .catch(() => {});
-  }, []);
+  }, [authKey]);
 
   const handleMessage = useCallback((msg) => {
     if (msg.type === "status") {

@@ -24,7 +24,7 @@ export default function App() {
     capturing, sessionId, iface, packetTotal, alertTotal,
     packets, alerts, error, settings, interfaces,
     startCapture, stopCapture, applySettings, clearLogs, handleMessage,
-  } = useCapture();
+  } = useCapture(undefined, user);
 
   // Live packet/alert stream. Reconnects on auth change so the WS handshake
   // always carries the current session token.
