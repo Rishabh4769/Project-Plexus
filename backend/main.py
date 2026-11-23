@@ -2,7 +2,7 @@
 main.py — FastAPI application entry point for PLEXUS.
 
 Security:
-  - CORS locked to localhost:5173 only
+  - CORS locked to the dev origins by default (extend via PLEXUS_CORS_ORIGINS)
   - All protected routes require X-Auth-Token header (server-side sessions)
   - BPF filter / iface whitelist-validated in sniffer / interfaces modules
   - All DB queries parameterised (see database.py)
@@ -68,6 +68,18 @@ async def lifespan(app: FastAPI):
 
 # ── App ───────────────────────────────────────────────────────────────── #
 
+def get_cors_origins() -> list[str]:
+    """Trusted frontend origins for CORS and the WS stream handshake.
+
+    Overridable via PLEXUS_CORS_ORIGINS (comma-separated), e.g. behind the
+    docker nginx proxy: PLEXUS_CORS_ORIGINS=http://localhost:8080.
+    """
+    raw = os.environ.get(
+        "PLEXUS_CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173"
+    )
+    return [o.strip() for o in raw.split(",") if o.strip()]
+
+
 app = FastAPI(
     title="PLEXUS API",
     version="3.0.0",
@@ -78,7 +90,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_origins=get_cors_origins(),
     allow_credentials=False,
     allow_methods=["GET", "POST", "DELETE"],
     allow_headers=["Content-Type", "X-Auth-Token"],
@@ -293,7 +305,10 @@ async def auth_me(username: str = Depends(require_auth)):
 # ── WebSocket origins allowed to open a stream (browsers always send Origin
 # on the WS handshake; rejecting anything else stops random websites from
 # siphoning the live packet feed via ws://127.0.0.1:8000).
-ALLOWED_WS_ORIGINS = {"http://localhost:5173", "http://127.0.0.1:5173"}
+# Same trusted set as CORS (see get_cors_origins) — behind the docker nginx
+# proxy the browser's Origin is http://localhost:8080, so it must be listed
+# via PLEXUS_CORS_ORIGINS there.
+ALLOWED_WS_ORIGINS = set(get_cors_origins())
 
 # Close codes: 4401 = unauthorized, 4403 = forbidden origin.
 # NOTE: we accept() first, then close with a code. Closing *before* accept

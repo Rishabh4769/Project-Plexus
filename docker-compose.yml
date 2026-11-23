@@ -1,0 +1,39 @@
+# ── PLEXUS ────────────────────────────────────────────────────────────────
+# docker compose up --build
+# then open http://localhost:8080
+#
+# backend  : FastAPI NIDS API (container-internal :8000).
+#            cap_add NET_RAW/NET_ADMIN so live packet capture works.
+#            SQLite db persists in the plexus-db volume at /data.
+# frontend : nginx on http://localhost:8080 serving the Vite build,
+#            proxying /api/* and /ws/* to the backend service.
+# ────────────────────────────────────────────────────────────────────────────
+# NOTE: `dockerfile` is resolved relative to `context`, not the project root.
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    cap_add:
+      - NET_RAW
+      - NET_ADMIN
+    environment:
+      PLEXUS_CORS_ORIGINS: "http://localhost:8080,http://127.0.0.1:8080"
+      PLEXUS_DB_PATH: /data/network_traffic.db
+    volumes:
+      - plexus-db:/data
+    expose:
+      - "8000"
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "8080:80"
+    depends_on:
+      - backend
+
+volumes:
+  plexus-db:

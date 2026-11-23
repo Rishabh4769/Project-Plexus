@@ -131,7 +131,10 @@ def test_scan_and_flood_alert_independently():
     scan_from(s, "192.0.2.44", SCAN_THRESHOLD + 1)
     flood_from(s, "192.0.2.44", FLOOD_THRESHOLD + 1)
     types = sorted(a[2] for a in drain(aq))
-    assert types == ["Flooding", "Port Scanning"]
+    # NB (Phase 2): flood_from() sends bare SYNs, so the SYN-flood rule
+    # correctly fires on that traffic too. Scan and flood still alert
+    # independently, exactly once each.
+    assert types == ["Flooding", "Port Scanning", "SYN Flood"]
 
 
 # ── Loopback exclusion ─────────────────────────────────────────────── #

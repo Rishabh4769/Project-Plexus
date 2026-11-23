@@ -6,6 +6,9 @@
 [![Scapy](https://img.shields.io/badge/Scapy-D94A38?style=for-the-badge&logo=wireshark)](https://scapy.net)
 [![SQLite](https://img.shields.io/badge/SQLite-07405E?style=for-the-badge&logo=sqlite)](https://sqlite.org)
 [![Laya](https://img.shields.io/badge/Laya-FF6B6B?style=for-the-badge&logo=python)](https://huggingface.co/convaiinnovations/laya-typed-decisions)
+[![CI](https://github.com/Rishabh4769/Project-Plexus/actions/workflows/ci.yml/badge.svg)](https://github.com/Rishabh4769/Project-Plexus/actions/workflows/ci.yml)
+[![Python 3.12](https://img.shields.io/badge/python-3.12-blue.svg)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 PLEXUS v3.0 is a state-of-the-art **Network Intrusion Detection System (NIDS)** and traffic monitoring suite. Combining real-time Scapy packet capturing, bidirectional network flow aggregation, and a tuned **XGBoost machine learning classifier** trained on the *CICIDS2017* benchmark dataset, PLEXUS delivers live threat detection and native desktop alerts. See [VERSION.md](VERSION.md) for the v3.0.0 security-hardening changelog and [flow.md](flow.md) for the detection-pipeline workflows.
 
@@ -23,28 +26,62 @@ PLEXUS v3.0 is a state-of-the-art **Network Intrusion Detection System (NIDS)** 
 * **PCAP Offline Analysis:** Batch upload `.pcap` or `.pcapng` files to reconstruct and analyze network sessions for threats.
 * **Interactive Dashboard:** Beautiful React-based interface featuring real-time packet visualisers, chart telemetry, and historical session logs.
 * **Report Generation:** Automatic PDF summary reports of captures and alerts using ReportLab.
+* **Extended Detection Rules:** SYN-flood detection (500+ bare SYNs / 10 s window), DNS-tunneling heuristic (overlong / high-entropy query names), and ARP-spoofing detection (IP→MAC change tracking) — all evaluated per-packet alongside port-scan and flood rules.
+* **Incident Correlation:** Alerts from the same source IP roll up into incidents with severity scoring (critical / high / medium / low) — SOC-analyst-style triage instead of alert noise.
+* **Threat-Intel Enrichment:** Source IPs are checked against a local blocklist (`backend/data/blocklist.txt`); hits are tagged `[blocklisted]` on the alert.
+* **Tested & CI-gated:** 89 pytest tests (auth, database, rate limiting, detection boundaries, PDF reports, Docker/CORS config) run on every push via GitHub Actions — no root or network required.
+* **One-Command Deploy:** `docker compose up --build` runs the full stack (FastAPI + nginx-served React UI) with live-capture capabilities granted to the container.
+
+---
+
+## Architecture
+
+```mermaid
+flowchart LR
+    NET([Network / PCAP]) --> SCAPY[Scapy sniffer\n_packet_callback]
+    SCAPY --> RULES[Rule engine\nscan · flood · SYN · DNS · ARP]
+    SCAPY --> FLOW[Flow aggregator\n20 features]
+    FLOW --> XGB[XGBoost NIDS\n99.97% acc]
+    RULES --> Q[(Alert queue)]
+    XGB --> Q
+    Q --> INC[Incident correlator\nseverity scoring]
+    INC --> WS[WebSocket /ws/stream]
+    INC --> DB[(SQLite\npackets · alerts · logs)]
+    WS --> UI[React dashboard\n:8080 via nginx]
+    UI -->|/api| API[FastAPI :8000]
+    API --> DB
+    API --> PDF[Night Dossier PDF]
+```
 
 ---
 
 ## Directory Architecture
 
 ```
-PLEXUS v1/
+Project-Plexus/
 ├── backend/
 │   ├── auth.py             # Auth & user session management
-│   ├── database.py         # SQLite parameterized queries layer
+│   ├── database.py         # SQLite parameterized queries layer (PLEXUS_DB_PATH-overridable)
+│   ├── incidents.py        # Alert→incident correlation + severity scoring
+│   ├── threatintel.py      # Local blocklist enrichment (backend/data/blocklist.txt)
 │   ├── main.py             # FastAPI entrypoint, routes, & WebSocket broadcaster
 │   ├── notifications.py    # Zero-dependency OS desktop notifications
 │   ├── report.py           # PDF report builder (ReportLab)
-│   ├── sniffer.py          # Multithreaded packet capture (Scapy)
+│   ├── sniffer.py          # Multithreaded packet capture (Scapy) + rule engine
+│   ├── Dockerfile          # Backend image (python:3.12-slim, non-root)
 │   └── requirements.txt    # Production dependencies
 ├── frontend/
 │   ├── src/
 │   │   ├── components/     # App views (Dashboard, Alerts, Packet Table, Charts)
 │   │   ├── hooks/          # API & WebSocket managers (single-socket, alert dedup)
 │   │   └── App.jsx
+│   ├── nginx.conf          # Reverse proxy: /api/* and /ws/* → backend
+│   ├── Dockerfile          # Multi-stage: node build → nginx serve
 │   ├── package.json
 │   └── index.html
+├── tests/                  # 89 pytest tests (no root/network needed)
+├── .github/workflows/ci.yml  # CI: backend tests + frontend build on push/PR
+├── docker-compose.yml      # One-command deploy (backend + frontend)
 ├── ml/
 │   ├── artifacts/          # Serialized models, scalers, feature specs, & metrics
 │   │   ├── model.joblib    # Trained XGBoost model
@@ -63,6 +100,12 @@ PLEXUS v1/
 ├── PLEXUS.sh               # Root orchestration launch script (Backend + Frontend)
 └── README.md
 ```
+
+---
+
+## Screenshots
+
+> 📸 Coming soon — dashboard, live alerts view, and a Night Dossier report sample.
 
 ---
 
@@ -99,6 +142,19 @@ The script will automatically:
 4. Run the React Vite development server on `http://localhost:5173` and open your browser.
 
 To stop both servers cleanly, press `Ctrl+C` in your terminal.
+
+### Docker (one-command deploy)
+
+```bash
+docker compose up --build
+# then open http://localhost:8080
+```
+
+This builds the FastAPI backend (with `NET_RAW`/`NET_ADMIN` capabilities so live
+packet capture works inside the container) and serves the React frontend through
+nginx, which reverse-proxies `/api/*` and `/ws/*` to the backend. The SQLite
+database persists in a Docker volume. CORS origins are configurable via the
+`PLEXUS_CORS_ORIGINS` environment variable.
 
 ---
 

@@ -1,0 +1,14 @@
+# PLEXUS local threat-intel blocklist — one IPv4 address per line.
+# Format: bare IP, no CIDR. Lines starting with '#' are ignored.
+# Every entry below is a documentation / TEST-NET range (RFC 5737) —
+# deliberately fake example data, safe to ship and commit.
+203.0.113.200
+203.0.113.201
+203.0.113.210
+203.0.113.240
+198.51.100.77
+198.51.100.78
+198.51.100.220
+192.0.2.99
+192.0.2.100
+192.0.2.230
