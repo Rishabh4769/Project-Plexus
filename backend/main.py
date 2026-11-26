@@ -33,6 +33,7 @@ from backend.notifications import notify
 from backend.auth import login, register_first_user, revoke_token, validate_token
 from backend.ratelimit import is_rate_limited, record_failed_attempt, reset_attempts
 from backend.database import (
+    get_alert,
     get_alerts,
     get_graph_data,
     get_logs,
@@ -45,7 +46,9 @@ from backend.database import (
     init_db,
     log_alert,
     log_packet,
+    list_alerts,
     search_packets,
+    update_alert,
     user_count,
     write_log,
 )
@@ -174,6 +177,14 @@ class SettingsUpdateRequest(BaseModel):
         if c not in VALID_BPF_FILTERS:
             raise ValueError(f"filter must be one of {sorted(VALID_BPF_FILTERS)}")
         return c
+
+class AlertUpdateRequest(BaseModel):
+    """Block 2: partial lifecycle update for one alert. All fields
+    optional; only the fields sent are changed."""
+    status:      Optional[str] = None
+    severity_id: Optional[int] = Field(None, ge=0, le=5)
+    notes:       Optional[str] = Field(None, max_length=2000)
+
 
 # ── WS broadcaster ────────────────────────────────────────────────────── #
 
@@ -642,6 +653,39 @@ async def session_alerts(
     _: str = Depends(require_auth),
 ):
     return get_alerts(session_id, limit=min(limit, 500), offset=offset)
+
+
+@app.get("/api/alerts")
+async def alerts_list(
+    status: Optional[str] = None,
+    severity_id: Optional[int] = None,
+    alert_type: Optional[str] = None,
+    src_ip: Optional[str] = None,
+    limit: int = 200,
+    offset: int = 0,
+    _: str = Depends(require_auth),
+):
+    """Block 2: cross-session alert queue for the Alerts page."""
+    return list_alerts(status=status, severity_id=severity_id,
+                       alert_type=alert_type, src_ip=src_ip,
+                       limit=min(limit, 500), offset=offset)
+
+
+@app.patch("/api/alerts/{alert_id}")
+async def alert_update(
+    alert_id: int,
+    body: AlertUpdateRequest,
+    username: str = Depends(require_auth),
+):
+    """Block 2: lifecycle update (status / severity / notes) on one alert."""
+    try:
+        return update_alert(alert_id, status=body.status,
+                            severity_id=body.severity_id, notes=body.notes,
+                            actor=username)
+    except ValueError as exc:
+        msg = str(exc)
+        raise HTTPException(status_code=404 if "not found" in msg else 400,
+                            detail=msg)
 
 
 @app.get("/api/sessions/{session_id}/port-usage")

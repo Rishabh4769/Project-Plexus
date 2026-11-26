@@ -24,6 +24,32 @@ ALERT_SEVERITY = {
     "Port Scanning":   "normal",
 }
 
+# v3.2.0 Block 2: OCSF severity_id (0-5) per alert type, consistent with
+# the events table. Derived from ALERT_SEVERITY: critical -> 4, normal -> 2.
+ALERT_SEVERITY_ID = {
+    "Flooding":        4,
+    "ML NIDS Anomaly": 4,
+    "Port Scanning":   2,
+}
+DEFAULT_ALERT_SEVERITY_ID = 2
+
+# v3.2.0 Block 2: MITRE ATT&CK mapping applied at alert creation.
+# (tactic, technique_id, technique_name). Block 7 builds the counts
+# view on top of these columns; unmapped types stay NULL.
+ALERT_MITRE = {
+    "Port Scanning": ("reconnaissance", "T1046", "Network Service Discovery"),
+    "Flooding":      ("impact",         "T1498", "Network Denial of Service"),
+}
+
+# Alert lifecycle (Block 2). Terminal states map to the empty set.
+ALERT_STATUSES = ("open", "acknowledged", "resolved", "false_positive")
+ALERT_TRANSITIONS = {
+    "open":          {"acknowledged", "resolved", "false_positive"},
+    "acknowledged":  {"open", "resolved", "false_positive"},
+    "resolved":      set(),
+    "false_positive": set(),
+}
+
 
 def get_connection() -> sqlite3.Connection:
     conn = sqlite3.connect(str(DB_PATH))
@@ -175,14 +201,48 @@ def log_packet(data: tuple) -> None:
         conn.commit()
 
 
+def _utc_now_iso() -> str:
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+
+
 def log_alert(data: tuple) -> None:
-    """data = (timestamp, src_ip, alert_type, description, session_id)"""
+    """data = (timestamp, src_ip, alert_type, description, session_id)
+
+    v3.2.0 Block 2: occurrence counting. A repeat fire with the same
+    (session_id, alert_type, src_ip) while the existing alert is open or
+    acknowledged increments event_count and advances last_seen instead
+    of inserting a duplicate row. A fire after the alert reached a
+    terminal state opens a fresh alert. New alerts are created with
+    status 'open', an OCSF severity_id and MITRE tags from the maps
+    above, and first_seen == last_seen == the fire timestamp.
+    """
+    timestamp, src_ip, alert_type, description, session_id = data
     with get_connection() as conn:
-        conn.execute(
-            "INSERT INTO alerts (timestamp, src_ip, alert_type, description, session_id) "
-            "VALUES (?, ?, ?, ?, ?)",
-            data,
-        )
+        existing = conn.execute(
+            "SELECT id FROM alerts WHERE session_id = ? AND alert_type = ? "
+            "AND src_ip = ? AND status IN ('open', 'acknowledged') "
+            "ORDER BY id DESC LIMIT 1",
+            (session_id, alert_type, src_ip),
+        ).fetchone()
+        if existing is not None:
+            conn.execute(
+                "UPDATE alerts SET event_count = event_count + 1, "
+                "last_seen = ? WHERE id = ?",
+                (timestamp, existing["id"]),
+            )
+        else:
+            mitre = ALERT_MITRE.get(alert_type, (None, None, None))
+            conn.execute(
+                "INSERT INTO alerts (timestamp, src_ip, alert_type, description, session_id, "
+                "ingested_at, severity_id, first_seen, last_seen, "
+                "mitre_tactic, mitre_technique_id, mitre_technique_name) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (timestamp, src_ip, alert_type, description, session_id,
+                 _utc_now_iso(),
+                 ALERT_SEVERITY_ID.get(alert_type, DEFAULT_ALERT_SEVERITY_ID),
+                 timestamp, timestamp, mitre[0], mitre[1], mitre[2]),
+            )
         conn.commit()
 
 
@@ -295,14 +355,117 @@ def search_packets(
     return [dict(r) for r in rows]
 
 
+_ALERT_SELECT = (
+    "id, timestamp, ingested_at, src_ip, dst_ip, dst_port, alert_type, "
+    "description, session_id, severity_id, rule_id, rule_name, event_count, "
+    "first_seen, last_seen, mitre_tactic, mitre_technique_id, "
+    "mitre_technique_name, status, notes, resolved_at, acknowledged_by, "
+    "resolved_by, user_name, host_name"
+)
+
+
 def get_alerts(session_id: str, limit: int = 200, offset: int = 0) -> list[dict]:
     with get_connection() as conn:
         rows = conn.execute(
-            "SELECT timestamp, src_ip, alert_type, description "
+            f"SELECT {_ALERT_SELECT} "
             "FROM alerts WHERE session_id = ? ORDER BY id DESC LIMIT ? OFFSET ?",
             (session_id, limit, offset),
         ).fetchall()
     return [dict(r) for r in rows]
+
+
+def get_alert(alert_id: int) -> dict | None:
+    with get_connection() as conn:
+        row = conn.execute(
+            f"SELECT {_ALERT_SELECT} FROM alerts WHERE id = ?",
+            (alert_id,),
+        ).fetchone()
+    return dict(row) if row is not None else None
+
+
+def list_alerts(status: str | None = None, severity_id: int | None = None,
+                alert_type: str | None = None, src_ip: str | None = None,
+                limit: int = 200, offset: int = 0) -> list[dict]:
+    """Cross-session alert list for the Alerts page (Block 2).
+
+    Ordered by most recent activity: last_seen, falling back to the
+    creation timestamp for pre-Block-2 rows.
+    """
+    clauses, params = [], []
+    if status is not None:
+        clauses.append("status = ?")
+        params.append(status)
+    if severity_id is not None:
+        clauses.append("severity_id = ?")
+        params.append(severity_id)
+    if alert_type is not None:
+        clauses.append("alert_type = ?")
+        params.append(alert_type)
+    if src_ip is not None:
+        clauses.append("src_ip = ?")
+        params.append(src_ip)
+    where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+    sql = (f"SELECT {_ALERT_SELECT} FROM alerts{where} "
+           "ORDER BY COALESCE(last_seen, timestamp) DESC, id DESC "
+           "LIMIT ? OFFSET ?")
+    params.extend([limit, offset])
+    with get_connection() as conn:
+        rows = conn.execute(sql, params).fetchall()
+    return [dict(r) for r in rows]
+
+
+def update_alert(alert_id: int, *, status: str | None = None,
+                 severity_id: int | None = None, notes: str | None = None,
+                 actor: str | None = None) -> dict:
+    """Apply a lifecycle update to one alert (Block 2).
+
+    Only the fields passed are changed. Status changes are validated
+    against ALERT_TRANSITIONS; severity must be an OCSF id 0-5.
+    Raises ValueError with a client-safe message on any invalid input
+    or a missing alert; the API layer maps that to 400/404.
+    """
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT * FROM alerts WHERE id = ?", (alert_id,)
+        ).fetchone()
+        if row is None:
+            raise ValueError("alert not found")
+        sets, params = [], []
+        if status is not None:
+            if status not in ALERT_STATUSES:
+                raise ValueError(f"unknown alert status: {status}")
+            current = row["status"]
+            if status != current:
+                if status not in ALERT_TRANSITIONS.get(current, set()):
+                    raise ValueError(
+                        f"invalid status transition: {current} -> {status}")
+                sets.append("status = ?")
+                params.append(status)
+                if status == "acknowledged":
+                    sets.append("acknowledged_by = ?")
+                    params.append(actor)
+                elif status in ("resolved", "false_positive"):
+                    sets.append("resolved_by = ?")
+                    params.append(actor)
+                    sets.append("resolved_at = ?")
+                    params.append(_utc_now_iso())
+                elif status == "open":
+                    sets.append("resolved_at = NULL")
+                    sets.append("resolved_by = NULL")
+        if severity_id is not None:
+            if not isinstance(severity_id, int) or not 0 <= severity_id <= 5:
+                raise ValueError("severity_id must be an integer between 0 and 5")
+            sets.append("severity_id = ?")
+            params.append(severity_id)
+        if notes is not None:
+            sets.append("notes = ?")
+            params.append(notes)
+        if sets:
+            params.append(alert_id)
+            conn.execute(
+                f"UPDATE alerts SET {', '.join(sets)} WHERE id = ?", params)
+            conn.commit()
+    return get_alert(alert_id)
 
 
 def get_port_usage(session_id: str) -> list[dict]:

@@ -4,7 +4,7 @@ import Sidebar          from "./components/Sidebar";
 import CaptureBar       from "./components/CaptureBar";
 import Dashboard        from "./components/Dashboard";
 import PacketTable      from "./components/PacketTable";
-import AlertTable       from "./components/AlertTable";
+import AlertsPage       from "./components/AlertsPage";
 import TrafficChart     from "./components/TrafficChart";
 import Sessions         from "./components/Sessions";
 import LoginPage        from "./pages/LoginPage";
@@ -122,7 +122,7 @@ export default function App() {
 
           {activeTab === "alerts" && (
             <div className={styles.padded}>
-              <AlertTable alerts={alerts} />
+              <AlertsPage />
             </div>
           )}
 
